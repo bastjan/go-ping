@@ -47,8 +47,8 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"math/rand"
 	"net"
+	"os"
 	"sync"
 	"syscall"
 	"time"
@@ -62,6 +62,12 @@ const (
 	timeSliceLength  = 8
 	protocolICMP     = 1
 	protocolIPv6ICMP = 58
+)
+
+var (
+	pid           = uint16(os.Getpid() & 0xFFFF)
+	idCounter     uint16
+	idCounterLock = new(sync.Mutex)
 )
 
 var (
@@ -98,7 +104,7 @@ func newPinger(ctx context.Context, addr string, network string) (*Pinger, error
 		Timeout:  time.Second * 100000,
 		Count:    -1,
 
-		id:      rand.Intn(0xffff),
+		id:      int(nextID()),
 		network: "udp",
 		ipv4:    ipv4,
 		size:    timeSliceLength,
@@ -150,12 +156,11 @@ type Pinger struct {
 	rAddr  string
 	addr   string
 
-	ipv4     bool
-	source   string
-	size     int
-	id       int
-	sequence int
-	network  string
+	ipv4    bool
+	source  string
+	size    int
+	id      int
+	network string
 }
 
 type packet struct {
@@ -452,7 +457,7 @@ func (p *Pinger) processPacket(recv *packet) error {
 
 	// Check if reply from same ID
 	body := m.Body.(*icmp.Echo)
-	if body.ID != p.id {
+	if body.ID != int(pid) || body.Seq != p.id {
 		return nil
 	}
 
@@ -502,8 +507,8 @@ func (p *Pinger) sendICMP(conn *icmp.PacketConn) error {
 	bytes, err := (&icmp.Message{
 		Type: typ, Code: 0,
 		Body: &icmp.Echo{
-			ID:   p.id,
-			Seq:  p.sequence,
+			ID:   int(pid),
+			Seq:  p.id,
 			Data: t,
 		},
 	}).Marshal(nil)
@@ -520,7 +525,6 @@ func (p *Pinger) sendICMP(conn *icmp.PacketConn) error {
 			}
 		}
 		p.PacketsSent += 1
-		p.sequence += 1
 		break
 	}
 	return nil
@@ -576,4 +580,12 @@ func timeToBytes(t time.Time) []byte {
 		b[i] = byte((nsec >> ((7 - i) * 8)) & 0xff)
 	}
 	return b
+}
+
+func nextID() uint16 {
+	idCounterLock.Lock()
+	defer idCounterLock.Unlock()
+
+	idCounter++
+	return idCounter
 }
